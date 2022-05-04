@@ -1,0 +1,16 @@
+# 服务监听端口
+listen_addr: :8080
+
+# 节点配置
+node:
+  addr_prefix: gnc
+  api: http://127.0.0.1:1317
+
+# 数据库配置
+database:
+  mode: sqlite # sqlite、 mysql、 postgres
+  dsn: collector.db # 数据库源 https://gorm.io/zh_CN/docs/connecting_to_the_database.html
+
+log: # 日志
+  dir:  # 文件日志目录，否则stderr
+  level: info # 日志级别 debug|info|warn|error|fatal
