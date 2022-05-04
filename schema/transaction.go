@@ -1,6 +1,9 @@
 package schema
 
-import "time"
+import (
+	"gorm.io/gorm"
+	"time"
+)
 
 // Transaction defines the structure for transaction information.
 type Transaction struct {
@@ -15,4 +18,14 @@ type Transaction struct {
 	GasWanted int64     `json:"gas_wanted" gorm:"default:0"`
 	GasUsed   int64     `json:"gas_used" gorm:"default:0"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+func QueryTxByHash(db *gorm.DB, hash string) (*Transaction, error) {
+	var item Transaction
+	if res := db.Model(&Transaction{}).Where("tx_hash = ?", hash).Find(&item); res.Error != nil {
+		return nil, res.Error
+	} else if res.RowsAffected == 0 {
+		return nil, nil
+	}
+	return &item, nil
 }

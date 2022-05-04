@@ -3,7 +3,6 @@ package collector
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/cosmos/cosmos-sdk/client/grpc/tmservice"
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -37,6 +36,8 @@ func NewCollector(logger log.Logger, db *gorm.DB, client *restclient.RestClient)
 
 // Start starts to synchronize Binance Chain data.
 func (cl *collector) Start(ctx context.Context) {
+	cl.logger.Info("Starting collector ...")
+
 	start := cl.GetLastBlockHeight() + 1
 	cl.client.Collect(ctx, start, cl)
 }
@@ -64,10 +65,10 @@ func (cl *collector) HandleGenesis(genesisState map[string]json.RawMessage) erro
 func (cl *collector) HandlePrevBlock(block *tmservice.GetBlockByHeightResponse) error {
 	cl.logger.Debug("HandlePrevBlock", "height", block.Block.Header.Height)
 	var mBlock schema.Block
-	if err := cl.db.Last(&mBlock).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
+	if err := cl.db.Find(&mBlock, "height = ?", block.Block.Header.Height).Error; err != nil {
+		//if errors.Is(err, gorm.ErrRecordNotFound) {
+		//	return nil
+		//}
 		return err
 	}
 
@@ -84,19 +85,21 @@ func (cl *collector) HandleBlock(block *tmservice.GetBlockByHeightResponse, txs 
 
 	// block
 	mblock := &schema.Block{
-		Height:        block.Block.Header.Height,
-		Proposer:      sdk.AccAddress(block.Block.Header.ProposerAddress).String(),
-		BlockHash:     hash(block.BlockId.Hash),
-		ParentHash:    hash(block.Block.Header.LastBlockId.Hash),
-		NumPrecommits: int64(len(block.Block.LastCommit.Signatures)),
-		NumTxs:        int64(len(block.Block.Data.Txs)),
-		Timestamp:     block.Block.Header.Time,
+		Height:       block.Block.Header.Height,
+		Proposer:     sdk.ConsAddress(block.Block.Header.ProposerAddress).String(),
+		BlockHash:    hash(block.BlockId.Hash),
+		ParentHash:   hash(block.Block.Header.LastBlockId.Hash),
+		PrecommitNum: int64(len(block.Block.LastCommit.Signatures)),
+		NumTxs:       int64(len(block.Block.Data.Txs)),
+		Timestamp:    block.Block.Header.Time.UTC(),
 	}
-	mblock.Moniker = schema.QueryValidatorMoniker(cl.db, mblock.Proposer)
+	if val := schema.QueryValidator(cl.db, mblock.Proposer); val != nil {
+		mblock.Moniker = val.Moniker
+	}
 
 	// block LastCommit
-	precommits := make([]*schema.PreCommit, mblock.NumPrecommits, mblock.NumPrecommits)
-	if mblock.NumPrecommits > 0 {
+	precommits := make([]*schema.PreCommit, mblock.PrecommitNum, mblock.PrecommitNum)
+	if mblock.PrecommitNum > 0 {
 		valSets, err := cl.client.ValidatorSetByHeight(block.Block.LastCommit.Height, nil)
 		if err != nil {
 			return fmt.Errorf("failed to query validator by height %d: %s", block.Block.LastCommit.Height, err)
@@ -104,18 +107,23 @@ func (cl *collector) HandleBlock(block *tmservice.GetBlockByHeightResponse, txs 
 		valMaps := map[string]*tmservice.Validator{}
 		for _, validator := range valSets.Validators {
 			valMaps[validator.Address] = validator
+			mblock.TotalVotingPower += validator.VotingPower
 		}
+		mblock.TotalValidatorNum = int64(len(valSets.Validators))
+
 		for i, precommit := range block.Block.LastCommit.Signatures {
 			addr := sdk.ConsAddress(precommit.ValidatorAddress).String()
 			val := valMaps[addr]
 			pc := &schema.PreCommit{
 				Height:           block.Block.LastCommit.Height,
 				Round:            block.Block.LastCommit.Round,
-				ValidatorAddress: addr,
+				ConsensusAddress: addr,
 				VotingPower:      val.VotingPower,
 				ProposerPriority: val.ProposerPriority,
-				Timestamp:        precommit.Timestamp,
+				Timestamp:        precommit.Timestamp.UTC(),
+				IsProposer:       addr == mblock.Proposer,
 			}
+			mblock.PrecommitVotingPower += val.VotingPower
 			precommits[i] = pc
 		}
 	}
@@ -132,12 +140,28 @@ func (cl *collector) HandleBlock(block *tmservice.GetBlockByHeightResponse, txs 
 			Fees:      tx.Tx.GetFee().String(),
 			GasWanted: tx.TxResponse.GasWanted,
 			GasUsed:   tx.TxResponse.GasUsed,
-			Timestamp: block.Block.Header.Time,
+			Timestamp: block.Block.Header.Time.UTC(),
 		}
 		mtxs[i] = t
 	}
 
 	return cl.db.Transaction(func(db *gorm.DB) error {
+		if err := db.Save(mblock).Error; err != nil {
+			return err
+		}
+
+		if len(precommits) > 0 {
+			if err := db.Save(precommits).Error; err != nil {
+				return err
+			}
+		}
+
+		if len(txs) > 0 {
+			if err := db.Save(txs).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 	return nil

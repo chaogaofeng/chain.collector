@@ -29,8 +29,12 @@ type Validator struct {
 }
 
 // QueryValidatorMoniker returns validator's moniker.
-func QueryValidatorMoniker(db *gorm.DB, valAddr string) string {
+func QueryValidator(db *gorm.DB, valAddr string) *Validator {
 	var validator Validator
-	db.Model(&Validator{}).Where("consensus_address = ?", valAddr).Find(&validator)
-	return validator.Moniker
+	if res := db.Model(&Validator{}).Where("consensus_address = ?", valAddr).Find(&validator); res.Error != nil {
+		return nil
+	} else if res.RowsAffected == 0 {
+		return nil
+	}
+	return &validator
 }

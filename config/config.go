@@ -7,6 +7,7 @@ import (
 
 // Config defines all necessary parameters.
 type Config struct {
+	Addr string     `mapstructure:"listen_addr"`
 	Node NodeConfig `mapstructure:"node"`
 	DB   DBConfig   `mapstructure:"database"`
 	Log  LogConfig  `mapstructure:"log"`
